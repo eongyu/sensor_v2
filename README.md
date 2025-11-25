@@ -1,20 +1,65 @@
-// =============================
-// File: README.md
-// =============================
-# Notes
-- Feature flags live in `config/Features.h`.
-- Pins are centralized in `config/Pins.h`.
-- MQ-2 math is wrapped in `drivers/MQ2.{h,cpp}` with divider + Rs/R0 logic identical to your original.
-- Replace any CO ppm mapping with your actual calibration if needed.
-- If you enable `USE_ICS43434`, avoid colliding those pins with UART2/ZE07.
-- JSON is printed once per second (Timer100ms ISR → main loop flags).
+# AIT-WIFI-G 다중 센서 허브 프로젝트
+
+이 프로젝트는 ESP32를 기반으로 하는 다목적 환경 모니터링 스테이션입니다. 다양한 센서로부터 데이터를 수집하여 Wi-Fi를 통해 MQTT 브로커로 전송하고, 웹 기반 설정 포털과 OTA(Over-the-Air) 펌웨어 업데이트 기능을 제공합니다.
+
+## 주요 기능
+
+- **Wi-Fi 및 MQTT 연결**: Wi-Fi 네트워크에 연결하여 수집된 센서 데이터를 JSON 형식으로 MQTT 브로커에 게시합니다.
+- **웹 설정 포털**: Wi-Fi에 연결할 수 없을 때 자동으로 AP(Access Point) 모드로 전환되어 웹 브라우저를 통해 Wi-Fi 및 MQTT 설정을 구성할 수 있습니다. (AP 이름: `SensorHub-Config`)
+- **OTA 펌웨어 업데이트**: 설정 포털을 통해 원격으로 펌웨어를 업데이트할 수 있습니다.
+- **다중 작업 처리**: FreeRTOS를 사용하여 센서 데이터 수집(Core 0)과 네트워크 통신(Core 1) 작업을 분리하여 안정적인 성능을 보장합니다.
+- **다양한 센서 지원**: 여러 종류의 환경 센서를 동시에 지원하며, `src/config/Features.h` 파일에서 손쉽게 활성화/비활성화할 수 있습니다.
+- **실시간 센서 교정**: 웹 UI를 통해 특정 센서(MQ-2, SMOKE2)의 교정을 실시간으로 수행하고 저장할 수 있습니다.
 
 
-- GPIO1 스위치가 눌려진 상태로 RESET 또는 5초간 누르고 있으면 SOFTAP 모드로 진입
-  - 무선 AP를 로 연결하고, 웹브라우저에서 192.168.4.1을 입력  
+## 하드웨어
 
-- 초기 가열이 필요한 센서(MQ-2, SMOKE2 등) 사용 시, 센서가 안정화된 이후에 MQTT 데이터 전송을 시작합니다.
+- **마이크로컨트롤러**: ESP32
+- **지원 센서**:
+  - `SPS30` (미세먼지) - **활성화**
+  - `BME688` (온도, 습도, 기압, 가스) - **활성화**
+  - `GSET11-P110` (아날로그 CO, `ADS1115` 통해 측정) - **활성화**
+  - `SMOKE2` (연기 감지) - **활성화**
+  - `ADS1115` (ADC) - **활성화**
+  - `SGP30` (eCO2, TVOC) - **활성화**
+  - `ZE07` (CO, UART 통신) - **활성화**
+  - `MQ-2` (가스, `ADS1115` 통해 측정) - **활성화**
+  - `ICS43434` (I2S 마이크) - *비활성화*
+  - `SEN0177` (미세먼지, UART 통신) - *비활성화*
 
-- 설정 페이지(SoftAP 모드)에서 MQ-2 센서의 현재 저항(Rs), 저장된 기준 저항(R0), 그리고 그 비율(Rs/R0)을 실시간으로 확인할 수 있습니다.
+## 소프트웨어 아키텍처
 
-- SMOKE 2 연기감지센서 동작 Calibration
+### FreeRTOS 작업
+이 펌웨어는 두 개의 주요 작업을 두 개의 CPU 코어에 분산하여 실행합니다.
+- **`sensorTask` (Core 0)**: 1초마다 모든 활성화된 센서로부터 데이터를 읽어 JSON 형식의 문자열로 만듭니다. 결과는 MQTT 작업을 위한 큐(Queue)로 전송됩니다.
+- **`mqttTask` (Core 1)**: Wi-Fi 및 MQTT 연결을 관리합니다. `sensorTask`로부터 큐에 데이터가 들어오면 해당 데이터를 MQTT 브로커로 게시합니다.
+
+### 설정 관리
+- Wi-Fi 및 MQTT 설정, 센서 교정 값은 ESP32의 비휘발성 저장소(NVS)에 저장됩니다.
+- 부팅 시 저장된 Wi-Fi 정보로 접속에 실패하거나, 지정된 버튼(`PIN_FORCE_CONFIG_PORTAL`)을 누르고 부팅하면 `SensorHub-Config` AP가 활성화됩니다.
+- 스마트폰이나 PC로 이 AP에 연결하면 자동으로 설정 페이지가 열리며, 여기에서 새 설정을 입력하고 장치를 재부팅할 수 있습니다.
+
+### MQTT 토픽
+- **데이터 발행**: `sensorhub/telemetry`
+- **상태 발행**: `sensorhub/status` (LWT 기능 포함, 'online'/'offline' 메시지 발행)
+
+## 시작하기
+
+### 설정
+1. **센서 선택**: `src/config/Features.h` 파일을 열어 사용하려는 센서의 `#define` 값을 `1`로 설정하고 사용하지 않는 센서는 `0`으로 설정합니다.
+2. **최초 부팅**: 장치에 전원을 연결합니다. 저장된 Wi-Fi 정보가 없으면 장치가 자동으로 AP 모드로 들어갑니다.
+3. **웹 포털 접속**:
+   - `SensorHub-Config`라는 이름의 Wi-Fi 네트워크에 연결합니다.
+   - 연결되면 대부분의 장치에서 자동으로 captive portal(설정 페이지)이 열립니다.
+   - 페이지가 자동으로 열리지 않으면 웹 브라우저에서 `192.168.4.1`로 접속합니다.
+4. **정보 입력**: 웹 페이지에서 접속할 Wi-Fi의 SSID와 비밀번호, 그리고 MQTT 브로커의 주소, 포트, 사용자 정보를 입력합니다.
+5. **저장 및 재부팅**: 'Save & Reboot' 버튼을 누르면 설정이 저장되고 장치가 재부팅됩니다.
+
+### 강제 설정 모드 진입
+- 장치가 작동하는 동안 `PIN_FORCE_CONFIG_PORTAL`에 연결된 버튼을 5초 이상 길게 누르면 강제로 설정 포털 모드로 진입할 수 있습니다.
+
+## 펌웨어 업데이트 (OTA)
+1. 설정 포털 페이지에 접속합니다.
+2. 'Go to Firmware Update' 링크를 클릭하여 업데이트 페이지로 이동합니다.
+3. '찾아보기' 버튼을 눌러 컴파일된 펌웨어 `.bin` 파일을 선택합니다.
+4. 'Update' 버튼을 누르면 업로드가 진행되며, 완료 후 장치가 자동으로 재부팅됩니다.
